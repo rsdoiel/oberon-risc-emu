@@ -62,11 +62,15 @@ struct KeyMapping key_map[] = {
 };
 
 static struct option long_options[] = {
-  { "fullscreen", no_argument,       NULL, 'f' },
-  { "leds",       no_argument,       NULL, 'L' },
-  { "size",       required_argument, NULL, 's' },
-  { "serial-fd",  required_argument, NULL, 'F' },
-  { NULL }
+  { "zoom",             required_argument, NULL, 'z' },
+  { "fullscreen",       no_argument,       NULL, 'f' },
+  { "leds",             no_argument,       NULL, 'L' },
+  { "mem",              required_argument, NULL, 'm' },
+  { "size",             required_argument, NULL, 's' },
+  { "serial-in",        required_argument, NULL, 'I' },
+  { "serial-out",       required_argument, NULL, 'O' },
+  { "boot-from-serial", no_argument,       NULL, 'S' },
+  { NULL,               no_argument,       NULL, 0   }
 };
 
 static void fail(int code, const char *fmt, ...) {
@@ -79,7 +83,19 @@ static void fail(int code, const char *fmt, ...) {
 }
 
 static void usage() {
-  fail(1, "Usage: risc [--fullscreen] [--size <width>x<height>] [--leds] disk-file-name");
+  puts("Usage: risc [OPTIONS...] DISK-IMAGE\n"
+       "\n"
+       "Options:\n"
+       "  --fullscreen          Start the emulator in full screen mode\n"
+       "  --zoom REAL           Scale the display in windowed mode\n"
+       "  --leds                Log LED state on stdout\n"
+       "  --mem MEGS            Set memory size\n"
+       "  --size WIDTHxHEIGHT   Set framebuffer size\n"
+       "  --boot-from-serial    Boot from serial line (disk image not required)\n"
+       "  --serial-in FILE      Read serial input from FILE\n"
+       "  --serial-out FILE     Write serial output to FILE\n"
+       );
+  exit(1);
 }
 
 int main (int argc, char *argv[]) {
@@ -92,20 +108,39 @@ int main (int argc, char *argv[]) {
   };
 
   bool fullscreen = false;
+  double zoom = 0;
   SDL_Rect risc_rect = {
     .w = RISC_FRAMEBUFFER_WIDTH,
     .h = RISC_FRAMEBUFFER_HEIGHT
   };
+  bool size_option = false;
+  int mem_option = 0;
+  const char *serial_in = NULL;
+  const char *serial_out = NULL;
+  bool boot_from_serial = false;
 
   int opt;
-  while ((opt = getopt_long(argc, argv, "fLS:F:", long_options, NULL)) != -1) {
+  while ((opt = getopt_long(argc, argv, "z:fLm:s:I:O:S", long_options, NULL)) != -1) {
     switch (opt) {
+      case 'z': {
+        double x = strtod(optarg, 0);
+        if (x > 0) {
+          zoom = x;
+        }
+        break;
+      }
       case 'f': {
         fullscreen = true;
         break;
       }
       case 'L': {
         risc_set_leds(risc, &leds);
+        break;
+      }
+      case 'm': {
+        if (sscanf(optarg, "%d", &mem_option) != 1) {
+          usage();
+        }
         break;
       }
       case 's': {
@@ -115,11 +150,20 @@ int main (int argc, char *argv[]) {
         }
         risc_rect.w = clamp(w, 32, MAX_WIDTH) & ~31;
         risc_rect.h = clamp(h, 32, MAX_HEIGHT);
-        risc_screen_size_hack(risc, risc_rect.w, risc_rect.h);
+        size_option = true;
         break;
       }
-      case 'F': {
-        risc_set_serial(risc, raw_serial_new(atoi(optarg), atoi(optarg) + 1));
+      case 'I': {
+        serial_in = optarg;
+        break;
+      }
+      case 'O': {
+        serial_out = optarg;
+        break;
+      }
+      case 'S': {
+        boot_from_serial = true;
+        risc_set_switches(risc, 1);
         break;
       }
       default: {
@@ -127,10 +171,29 @@ int main (int argc, char *argv[]) {
       }
     }
   }
-  if (optind != argc - 1) {
+
+  if (mem_option || size_option) {
+    risc_configure_memory(risc, mem_option, risc_rect.w, risc_rect.h);
+  }
+
+  if (optind == argc - 1) {
+    risc_set_spi(risc, 1, disk_new(argv[optind]));
+  } else if (optind == argc && boot_from_serial) {
+    /* Allow diskless boot */
+    risc_set_spi(risc, 1, disk_new(NULL));
+  } else {
     usage();
   }
-  risc_set_spi(risc, 1, disk_new(argv[optind]));
+
+  if (serial_in || serial_out) {
+    if (!serial_in) {
+      serial_in = "/dev/null";
+    }
+    if (!serial_out) {
+      serial_out = "/dev/null";
+    }
+    risc_set_serial(risc, raw_serial_new(serial_in, serial_out));
+  }
 
   if (SDL_Init(SDL_INIT_VIDEO) != 0) {
     fail(1, "Unable to initialize SDL: %s", SDL_GetError());
@@ -141,14 +204,25 @@ int main (int argc, char *argv[]) {
   SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "best");
 
   int window_flags = SDL_WINDOW_HIDDEN;
-  int window_pos = SDL_WINDOWPOS_UNDEFINED;
+  int display = 0;
   if (fullscreen) {
     window_flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
-    window_pos = best_display(&risc_rect);
+    display = best_display(&risc_rect);
+  }
+  if (zoom == 0) {
+    SDL_Rect bounds;
+    if (SDL_GetDisplayBounds(display, &bounds) == 0 &&
+        bounds.h >= risc_rect.h * 2 && bounds.w >= risc_rect.w * 2) {
+      zoom = 2;
+    } else {
+      zoom = 1;
+    }
   }
   SDL_Window *window = SDL_CreateWindow("Project Oberon",
-                                        window_pos, window_pos,
-                                        risc_rect.w, risc_rect.h,
+                                        SDL_WINDOWPOS_UNDEFINED_DISPLAY(display),
+                                        SDL_WINDOWPOS_UNDEFINED_DISPLAY(display),
+                                        (int)(risc_rect.w * zoom),
+                                        (int)(risc_rect.h * zoom),
                                         window_flags);
   if (window == NULL) {
     fail(1, "Could not create window: %s", SDL_GetError());
@@ -186,6 +260,7 @@ int main (int argc, char *argv[]) {
       switch (event.type) {
         case SDL_QUIT: {
           done = true;
+          break;
         }
 
         case SDL_WINDOWEVENT: {
@@ -279,18 +354,19 @@ int main (int argc, char *argv[]) {
 
 
 static int best_display(const SDL_Rect *rect) {
-  int result = SDL_WINDOWPOS_UNDEFINED;
+  int best = 0;
   int display_cnt = SDL_GetNumVideoDisplays();
   for (int i = 0; i < display_cnt; i++) {
     SDL_Rect bounds;
-    SDL_GetDisplayBounds(i, &bounds);
-    if (bounds.h == rect->h && bounds.w >= rect->w) {
-      result = SDL_WINDOWPOS_UNDEFINED_DISPLAY(i);
-      if (bounds.w == rect->w)
+    if (SDL_GetDisplayBounds(i, &bounds) == 0 &&
+        bounds.h == rect->h && bounds.w >= rect->w) {
+      best = i;
+      if (bounds.w == rect->w) {
         break;  // exact match
+      }
     }
   }
-  return result;
+  return best;
 }
 
 static int clamp(int x, int min, int max) {

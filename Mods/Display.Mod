@@ -1,11 +1,12 @@
-MODULE Display;  (*NW 5.11.2013*)
+MODULE Display;  (*NW 5.11.2013 / 17.1.2019*)
 (* Adapted for a customizable framebuffer size -- see git history *)
 
   IMPORT SYSTEM;
 
   CONST black* = 0; white* = 1;  (*black = background*)
     replace* = 0; paint* = 1; invert* = 2;  (*modes*)
-    base = 0E7F00H;  (*adr of 1024 x 768 pixel, monocolor display frame*)
+    (* base = 0E7F00H; *)  (*adr of 1024 x 768 pixel, monocolor display frame*)
+    (* In the emulator, the frame buffer address might be moved depending on memory configuration *)
 
   TYPE Frame* = POINTER TO FrameDesc;
     FrameMsg* = RECORD END ;
@@ -28,7 +29,7 @@ MODULE Display;  (*NW 5.11.2013*)
 
   PROCEDURE Dot*(col, x, y, mode: INTEGER);
     VAR a: INTEGER; u, s: SET;
-  BEGIN a := base + (x DIV 32)*4 + y*Span;
+  BEGIN a := Base + (x DIV 32)*4 + y*Span;
     s := {x MOD 32}; SYSTEM.GET(a, u);
     IF mode = paint THEN SYSTEM.PUT(a, u + s)
     ELSIF mode = invert THEN SYSTEM.PUT(a, u / s)
@@ -39,7 +40,7 @@ MODULE Display;  (*NW 5.11.2013*)
 
   PROCEDURE ReplConst*(col, x, y, w, h, mode: INTEGER);
     VAR al, ar, a0, a1, i: INTEGER; left, right, mid, pix, pixl, pixr: SET;
-  BEGIN al := base + y*Span;
+  BEGIN al := Base + y*Span;
     ar := ((x+w-1) DIV 32)*4 + al; al := (x DIV 32)*4 + al;
     IF ar = al THEN
       mid := {(x MOD 32) .. ((x+w-1) MOD 32)};
@@ -52,7 +53,7 @@ MODULE Display;  (*NW 5.11.2013*)
         END;
         INC(a1, Span)
       END
-    ELSE
+    ELSIF ar > al THEN
       left := {(x MOD 32) .. 31}; right := {0 .. ((x+w-1) MOD 32)};
       a0 := al;
       FOR i := 1 TO h DO
@@ -77,11 +78,11 @@ MODULE Display;  (*NW 5.11.2013*)
 
   PROCEDURE CopyPattern*(col, patadr, x, y, mode: INTEGER);  (*only for modes = paint, invert*)
     VAR a0, pwd, i: INTEGER;
-      w, h, pbt: BYTE; pix: SET;
+      w, h, pbt: BYTE; pix, mask: SET;
   BEGIN SYSTEM.GET(patadr, w); SYSTEM.GET(patadr+1, h); INC(patadr, 2);
-    a0 := base + (x DIV 32)*4 + y*Span;
+    a0 := Base + (x DIV 32)*4 + y*Span; x := x MOD 32; mask := SYSTEM.VAL(SET, ASR(7FFFFFFFH, 31-x));
     FOR i := 1 TO h DO
-      (*build pattern line; w < 32*)
+      (*build pattern line; w <= 32*)
       SYSTEM.GET(patadr, pbt); INC(patadr); pwd := pbt;
       IF w > 8 THEN SYSTEM.GET(patadr, pbt); INC(patadr); pwd := pbt*100H + pwd;
         IF w > 16 THEN SYSTEM.GET(patadr, pbt); INC(patadr); pwd := pbt*10000H + pwd;
@@ -89,13 +90,13 @@ MODULE Display;  (*NW 5.11.2013*)
         END
       END ;
       SYSTEM.GET(a0, pix);
-      IF mode = invert THEN SYSTEM.PUT(a0, SYSTEM.VAL(SET, LSL(pwd, x MOD 32)) / pix)
-      ELSE SYSTEM.PUT(a0, SYSTEM.VAL(SET, LSL(pwd, x MOD 32)) + pix)
+      IF mode = invert THEN SYSTEM.PUT(a0, SYSTEM.VAL(SET, LSL(pwd, x)) / pix)
+      ELSE SYSTEM.PUT(a0, SYSTEM.VAL(SET, LSL(pwd, x)) + pix)
       END ;
-      IF (x MOD 32) + w > 32 THEN (*spill over*)
+      IF x + w > 32 THEN (*spill over*)
         SYSTEM.GET(a0+4, pix);
-        IF mode = invert THEN SYSTEM.PUT(a0+4, SYSTEM.VAL(SET, ASR(pwd, -(x MOD 32))) / pix)
-        ELSE SYSTEM.PUT(a0+4, SYSTEM.VAL(SET, ASR(pwd, -(x MOD 32))) + pix)
+        IF mode = invert THEN SYSTEM.PUT(a0+4, SYSTEM.VAL(SET, ASR(pwd, -x)) * mask/ pix)
+        ELSE SYSTEM.PUT(a0+4, SYSTEM.VAL(SET, ASR(pwd, -x)) * mask+ pix)
         END
       END;
       INC(a0, Span)
@@ -111,7 +112,7 @@ MODULE Display;  (*NW 5.11.2013*)
   BEGIN
     u0 := sx DIV 32; u1 := sx MOD 32; u2 := (sx+w) DIV 32; u3 := (sx+w) MOD 32;
     v0 := dx DIV 32; v1 := dx MOD 32; v2 := (dx+w) DIV 32; v3 := (dx+w) MOD 32;
-    sa := base + u0*4 + sy*Span; da := base + v0*4 + dy*Span;
+    sa := Base + u0*4 + sy*Span; da := Base + v0*4 + dy*Span;
     d := da - sa; n := u1 - v1;   (*displacement in words and bits*)
     len := (u2 - u0) * 4;
     m0 := {v1 .. 31}; m2 := {v3 .. 31}; m3 := m0 / m2;
@@ -164,7 +165,7 @@ MODULE Display;  (*NW 5.11.2013*)
       pta0, pta1: INTEGER;  (*pattern addresses*)
       ph: BYTE;
       left, right, mid, pix, pixl, pixr, ptw: SET;
-  BEGIN al := base + y*Span; SYSTEM.GET(patadr+1, ph);
+  BEGIN al := Base + y*Span; SYSTEM.GET(patadr+1, ph);
     pta0 := patadr+4; pta1 := ph*4 + pta0;
     ar := ((x+w-1) DIV 32)*4 + al; al := (x DIV 32)*4 + al;
     IF ar = al THEN
@@ -175,7 +176,7 @@ MODULE Display;  (*NW 5.11.2013*)
         IF pta0 = pta1 THEN pta0 := patadr+4 END;
         INC(a1, Span);
       END
-    ELSE
+    ELSIF ar > al THEN
       left := {(x MOD 32) .. 31}; right := {0 .. ((x+w-1) MOD 32)};
       a0 := al;
       FOR i := 1 TO h DO
@@ -192,21 +193,27 @@ MODULE Display;  (*NW 5.11.2013*)
   PROCEDURE InitResolution;
   VAR magic: INTEGER;
   BEGIN
-    SYSTEM.GET(base, magic);
+    Base := 0E7F00H;
+    SYSTEM.GET(Base, magic);
     IF magic = 53697A65H THEN
-      SYSTEM.GET(base + 4, Width);
-      SYSTEM.GET(base + 8, Height);
+      SYSTEM.GET(Base + 4, Width);
+      SYSTEM.GET(Base + 8, Height);
       Span := 128;
     ELSIF magic = 53697A66H THEN
-      SYSTEM.GET(base + 4, Width);
-      SYSTEM.GET(base + 8, Height);
+      SYSTEM.GET(Base + 4, Width);
+      SYSTEM.GET(Base + 8, Height);
+      Span := Width DIV 8
+    ELSIF magic = 53697A67H THEN
+      SYSTEM.GET(Base + 4, Width);
+      SYSTEM.GET(Base + 8, Height);
+      SYSTEM.GET(Base + 12, Base);
       Span := Width DIV 8
     ELSE
       Width := 1024; Height := 768; Span := 128
     END;
   END InitResolution;
 
-BEGIN Base := base; InitResolution;
+BEGIN InitResolution;
   arrow := SYSTEM.ADR($0F0F 0060 0070 0038 001C 000E 0007 8003 C101 E300 7700 3F00 1F00 3F00 7F00 FF00$);
   star := SYSTEM.ADR($0F0F 8000 8220 8410 8808 9004 A002 C001 7F7F C001 A002 9004 8808 8410 8220 8000$);
   hook := SYSTEM.ADR($0C0C 070F 8707 C703 E701 F700 7F00 3F00 1F00 0F00 0700 0300 01$);
