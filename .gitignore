@@ -1,3 +1,7 @@
+*~
+*.bak
+*.tmp
+*.swp
 risc
 *.img
 risc.dSYM
